@@ -76,6 +76,7 @@ export function robustParseJSON(str: string): any {
   try { return JSON.parse(currentJson); } catch (e) { /* continue */ }
 
   let cleaned = currentJson.trim();
+  cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');
   while (cleaned.length > 0 && !/[}\]"0-9a-z]/i.test(cleaned[cleaned.length - 1])) {
     cleaned = cleaned.slice(0, -1).trim();
   }
@@ -106,6 +107,7 @@ export function robustParseJSON(str: string): any {
 
   try { return JSON.parse(tempJson); } catch (e) {
     let aggressive = fixedJson.trim();
+    aggressive = aggressive.replace(/,\s*([}\]])/g, '$1');
     if (aggressive.endsWith(',')) aggressive = aggressive.slice(0, -1);
     const { result: aggFixed, openBraces: ob, openBrackets: bk, inString: aggInString } = sanitizeAndBalance(aggressive);
   try { return JSON.parse(closeBraces(aggFixed, ob, bk, aggInString)); } catch {

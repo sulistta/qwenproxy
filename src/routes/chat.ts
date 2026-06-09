@@ -63,14 +63,6 @@ export function getIncrementalDelta(oldStr: string, newStr: string, prevLength: 
     const actualSuffix = newStr.slice(prevLength - checkLen, prevLength);
     
     if (expectedSuffix === actualSuffix) {
-      if (delta.length <= 4 && oldStr.length > 2000) {
-        return { 
-          delta: newStr, 
-          matchedContent: oldStr + newStr,
-          contentLength: newStr.length,
-          contentSuffix: newStr.slice(-64)
-        };
-      }
       return { 
         delta, 
         matchedContent: newStr,
@@ -83,14 +75,6 @@ export function getIncrementalDelta(oldStr: string, newStr: string, prevLength: 
   // Fallback: startsWith check for edge cases
   if (newStr.startsWith(oldStr)) {
     const delta = newStr.slice(oldStr.length);
-    if (delta.length <= 4 && oldStr.length > 2000) {
-      return { 
-        delta: newStr, 
-        matchedContent: oldStr + newStr,
-        contentLength: newStr.length,
-        contentSuffix: newStr.slice(-64)
-      };
-    }
     return { 
       delta, 
       matchedContent: newStr,

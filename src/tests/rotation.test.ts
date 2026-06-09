@@ -1,23 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { getNextAccount, invalidateAccountsCache } from '../core/account-manager.ts';
-import { addAccount, removeAccount, loadAccounts } from '../core/accounts.ts';
+import {
+  getNextAccount,
+  setAccountManagerAccountsForTests,
+} from '../core/account-manager.ts';
 
 test('Account Rotation: Round-Robin rotation cycle', async () => {
-  const originalAccounts = loadAccounts();
-  const originalIds = originalAccounts.map(a => a.id);
-
   const mockAccounts = [
-    { email: 'account1@test.com', password: 'password1' },
-    { email: 'account2@test.com', password: 'password2' },
-    { email: 'account3@test.com', password: 'password3' },
+    { id: 'account-1', email: 'account1@test.com', password: 'password1' },
+    { id: 'account-2', email: 'account2@test.com', password: 'password2' },
+    { id: 'account-3', email: 'account3@test.com', password: 'password3' },
   ];
 
   try {
-    for (const acc of mockAccounts) {
-      addAccount(acc.email, acc.password);
-    }
-    invalidateAccountsCache();
+    setAccountManagerAccountsForTests(mockAccounts);
 
     const first = getNextAccount(true);
     const second = getNextAccount();
@@ -34,12 +30,6 @@ test('Account Rotation: Round-Robin rotation cycle', async () => {
     assert.strictEqual(third.email, 'account3@test.com');
     assert.strictEqual(fourth.email, 'account1@test.com');
   } finally {
-    const current = loadAccounts();
-    for (const acc of current) {
-      if (!originalIds.includes(acc.id)) {
-        removeAccount(acc.id);
-      }
-    }
-    invalidateAccountsCache();
+    setAccountManagerAccountsForTests(null);
   }
 });
