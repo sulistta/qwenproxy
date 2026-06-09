@@ -71,6 +71,7 @@ jobs:
       issues: write
       pull-requests: write
       packages: write
+      id-token: write
     outputs:
       new_version: ${{ steps.get_version.outputs.version }}
     steps:
