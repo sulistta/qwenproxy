@@ -6,6 +6,7 @@
 
 import { Context } from "hono";
 import { getQwenHeaders } from "../services/playwright.js";
+import { isPlaywrightMockEnabled } from "../core/test-mode.js";
 import crypto from "crypto";
 
 interface STSResponse {
@@ -137,7 +138,7 @@ async function uploadToOSS(
     endpoint,
   } = stsData;
 
-  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+  if (isPlaywrightMockEnabled()) {
     return stsData.file_url.split("?")[0];
   }
 

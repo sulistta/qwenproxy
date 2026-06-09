@@ -1,44 +1,91 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { z } from 'zod'
 
-const envSchema = z.object({
-  PORT: z.string().default('3000'),
-  HOST: z.string().default('0.0.0.0'),
-  HEADLESS: z.string().default('true'),
-  BROWSER: z.enum(['chromium', 'firefox', 'webkit', 'chrome', 'edge']).default('chromium'),
-  USER_DATA_DIR: z.string().default('./qwen_profiles'),
-  USER_AGENT: z.string().default('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
-  LOG_CONSOLE: z.string().default('false'),
-  NAVIGATION_TIMEOUT: z.string().default('30000'),
-  PAGE_TIMEOUT: z.string().default('15000'),
-  HTTP_TIMEOUT: z.string().default('10000'),
-  CHAT_TIMEOUT: z.string().default('120000'),
-  CACHE_TTL: z.string().default('3600'),
-  RESPONSE_TTL: z.string().default('1800'),
-  METRICS_INTERVAL: z.string().default('10000'),
-  WATCHDOG_INTERVAL: z.string().default('5000'),
-  WATCHDOG_FAILURES: z.string().default('3'),
-  RAM_WARNING: z.string().default('80'),
-  RAM_CRITICAL: z.string().default('95'),
-  WS_WARNING: z.string().default('50'),
-  WS_CRITICAL: z.string().default('100'),
-  QWEN_BASE_URL: z.string().default('https://chat.qwen.ai'),
-  QWEN_HTTP_ENDPOINT: z.string().default('https://api.qwen.ai/v1/chat'),
-  QWEN_API_KEY: z.string().default(''),
-  API_KEY: z.string().default(''),
+export const BROWSER_TYPES = ['chromium', 'firefox', 'webkit', 'chrome', 'edge'] as const
+
+const positiveInteger = z.number().int().positive()
+
+const configSchema = z.object({
+  server: z.object({
+    port: z.number().int().min(1).max(65535),
+    host: z.string().min(1),
+  }).strict(),
+  browser: z.object({
+    headless: z.boolean(),
+    type: z.enum(BROWSER_TYPES),
+    userDataDir: z.string().min(1),
+    userAgent: z.string().min(1),
+    args: z.array(z.string()),
+    launchTimeout: positiveInteger,
+    healthCheckInterval: positiveInteger,
+    headers: z.record(z.string(), z.string()),
+    logConsole: z.boolean(),
+  }).strict(),
+  timeouts: z.object({
+    navigation: positiveInteger,
+    page: positiveInteger,
+    http: positiveInteger,
+    chat: positiveInteger,
+  }).strict(),
+  cache: z.object({
+    defaultTTL: positiveInteger,
+    responseTTL: positiveInteger,
+  }).strict(),
+  metrics: z.object({
+    interval: positiveInteger,
+  }).strict(),
+  watchdog: z.object({
+    checkInterval: positiveInteger,
+    consecutiveFailuresThreshold: positiveInteger,
+    ram: z.object({
+      warningThreshold: z.number().min(1).max(100),
+      criticalThreshold: z.number().min(1).max(100),
+    }).strict(),
+    streams: z.object({
+      warningThreshold: positiveInteger,
+      criticalThreshold: positiveInteger,
+    }).strict(),
+  }).strict(),
+  apiKey: z.string(),
+  qwen: z.object({
+    baseUrl: z.string().url(),
+    httpEndpoint: z.string().url(),
+    apiKey: z.string(),
+  }).strict(),
+}).strict().superRefine((value, ctx) => {
+  if (value.watchdog.ram.warningThreshold >= value.watchdog.ram.criticalThreshold) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['watchdog', 'ram', 'warningThreshold'],
+      message: 'RAM warning threshold must be lower than critical threshold',
+    })
+  }
+
+  if (value.watchdog.streams.warningThreshold >= value.watchdog.streams.criticalThreshold) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['watchdog', 'streams', 'warningThreshold'],
+      message: 'stream warning threshold must be lower than critical threshold',
+    })
+  }
 })
 
-const env = envSchema.parse(process.env)
+export type BrowserTypeConfig = typeof BROWSER_TYPES[number]
+export type Config = z.infer<typeof configSchema>
 
-export const config = {
+export const DEFAULT_CONFIG_PATH = path.resolve('data', 'config.json')
+
+export const DEFAULT_CONFIG: Config = {
   server: {
-    port: parseInt(env.PORT),
-    host: env.HOST,
+    port: 3000,
+    host: '0.0.0.0',
   },
   browser: {
-    headless: env.HEADLESS !== 'false',
-    type: env.BROWSER,
-    userDataDir: env.USER_DATA_DIR,
-    userAgent: env.USER_AGENT,
+    headless: true,
+    type: 'chromium',
+    userDataDir: './qwen_profiles',
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     args: [
       '--disable-gpu',
       '--disable-dev-shm-usage',
@@ -50,42 +97,106 @@ export const config = {
     launchTimeout: 30000,
     healthCheckInterval: 30000,
     headers: {
-      'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'accept-language': 'en-US,en;q=0.9',
     },
-    logConsole: env.LOG_CONSOLE === 'true',
+    logConsole: false,
   },
   timeouts: {
-    navigation: parseInt(env.NAVIGATION_TIMEOUT),
-    page: parseInt(env.PAGE_TIMEOUT),
-    http: parseInt(env.HTTP_TIMEOUT),
-    chat: parseInt(env.CHAT_TIMEOUT),
+    navigation: 30000,
+    page: 15000,
+    http: 10000,
+    chat: 120000,
   },
   cache: {
-    defaultTTL: parseInt(env.CACHE_TTL),
-    responseTTL: parseInt(env.RESPONSE_TTL),
+    defaultTTL: 3600,
+    responseTTL: 1800,
   },
   metrics: {
-    interval: parseInt(env.METRICS_INTERVAL),
+    interval: 10000,
   },
   watchdog: {
-    checkInterval: parseInt(env.WATCHDOG_INTERVAL),
-    consecutiveFailuresThreshold: parseInt(env.WATCHDOG_FAILURES),
+    checkInterval: 5000,
+    consecutiveFailuresThreshold: 3,
     ram: {
-      warningThreshold: parseInt(env.RAM_WARNING),
-      criticalThreshold: parseInt(env.RAM_CRITICAL),
+      warningThreshold: 80,
+      criticalThreshold: 95,
     },
     streams: {
-      warningThreshold: parseInt(env.WS_WARNING),
-      criticalThreshold: parseInt(env.WS_CRITICAL),
+      warningThreshold: 50,
+      criticalThreshold: 100,
     },
   },
-  apiKey: env.API_KEY,
+  apiKey: '',
   qwen: {
-    baseUrl: env.QWEN_BASE_URL,
-    httpEndpoint: env.QWEN_HTTP_ENDPOINT,
-    apiKey: env.QWEN_API_KEY,
+    baseUrl: 'https://chat.qwen.ai',
+    httpEndpoint: 'https://api.qwen.ai/v1/chat',
+    apiKey: '',
   },
 }
 
-export type Config = typeof config
+let activeConfigPath = DEFAULT_CONFIG_PATH
+
+function cloneConfig(value: Config): Config {
+  return JSON.parse(JSON.stringify(value)) as Config
+}
+
+function formatZodError(error: z.ZodError): string {
+  return error.issues
+    .map(issue => `${issue.path.join('.') || 'config'}: ${issue.message}`)
+    .join('; ')
+}
+
+export function parseConfig(value: unknown, source = 'configuration'): Config {
+  const parsed = configSchema.safeParse(value)
+  if (!parsed.success) {
+    throw new Error(`Invalid configuration in ${source}: ${formatZodError(parsed.error)}`)
+  }
+  return parsed.data
+}
+
+export function loadConfig(configPath = activeConfigPath): Config {
+  if (!fs.existsSync(configPath)) {
+    return cloneConfig(DEFAULT_CONFIG)
+  }
+
+  let raw: string
+  try {
+    raw = fs.readFileSync(configPath, 'utf-8')
+  } catch (err: any) {
+    throw new Error(`Failed to read configuration at ${configPath}: ${err.message}`)
+  }
+
+  try {
+    return parseConfig(JSON.parse(raw), configPath)
+  } catch (err: any) {
+    if (err instanceof SyntaxError) {
+      throw new Error(`Invalid configuration in ${configPath}: ${err.message}`)
+    }
+    throw err
+  }
+}
+
+export function saveConfig(nextConfig: Config, configPath = activeConfigPath): Config {
+  const parsed = parseConfig(nextConfig, configPath)
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  fs.writeFileSync(configPath, `${JSON.stringify(parsed, null, 2)}\n`)
+
+  if (configPath === activeConfigPath) {
+    config = parsed
+  }
+
+  return parsed
+}
+
+export function reloadConfig(configPath = activeConfigPath): Config {
+  activeConfigPath = configPath
+  config = loadConfig(configPath)
+  return config
+}
+
+export function getConfigPath(): string {
+  return activeConfigPath
+}
+
+export let config: Config = loadConfig()

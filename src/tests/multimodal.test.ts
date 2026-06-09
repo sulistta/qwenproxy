@@ -100,7 +100,7 @@ async function sendMultimodalRequest(
   return { content, reasoning };
 }
 
-test('Multimodal: all media files with real Qwen responses', { skip: process.env.CI ? 'Requires real accounts - skipped in CI' : false }, async () => {
+test('Multimodal: all media files with real Qwen responses', { skip: 'Requires real accounts and a live Qwen session' }, async () => {
   const port = await getFreePort(3200);
   const server = serve({ fetch: app.fetch, port });
   console.log(`[MultimodalTest] Server started on port ${port}`);

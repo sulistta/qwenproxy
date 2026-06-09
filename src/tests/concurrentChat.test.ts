@@ -25,7 +25,7 @@ async function getFreePort(startPort: number): Promise<number> {
   }
 }
 
-test('Concurrent chat requests check for "chat is in progress"', { skip: process.env.CI ? 'Requires real accounts - skipped in CI' : false }, async () => {
+test('Concurrent chat requests check for "chat is in progress"', { skip: 'Requires real accounts and a live Qwen session' }, async () => {
   const port = await getFreePort(3100);
   const server = serve({ fetch: app.fetch, port });
   console.log(`[ConcurrentTest] Server started on port ${port}`);

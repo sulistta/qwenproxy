@@ -1,4 +1,6 @@
 import { getQwenHeaders, getBasicHeaders } from './playwright.js';
+import { getMockSessionId, isPlaywrightMockEnabled } from '../core/test-mode.js';
+import type { QwenReasoningEffort } from '../utils/types.js';
 import crypto from 'crypto';
 
 const CACHED_TIMEZONE = new Date().toString().split(' (')[0];
@@ -153,6 +155,15 @@ async function refillPoolForAccount(accountId: string) {
 
 export async function getWarmedChat(accountId?: string) {
   const key = accountId || 'global';
+  if (isPlaywrightMockEnabled()) {
+    return {
+      chatId: getMockSessionId(),
+      headers: await getBasicQwenHeaders(undefined),
+      accountId: key,
+      timestamp: Date.now(),
+    };
+  }
+
   let pool = warmPool.get(key);
   if (!pool) { pool = []; warmPool.set(key, pool); }
   cleanupStalePool(key);
@@ -187,7 +198,7 @@ export interface QwenMessage {
     research_mode: string;
     auto_thinking: boolean;
     thinking_mode: string;
-    thinking_format: string;
+    thinking_format?: string;
     auto_search: boolean;
   };
   extra: {
@@ -343,7 +354,7 @@ export interface QwenFileEntry {
 
 export async function createQwenStream(
   prompt: string,
-  enableThinking: boolean,
+  reasoningEffort: QwenReasoningEffort,
   modelId: string,
   forcedParentId?: string | null,
   accountId?: string,
@@ -363,7 +374,9 @@ export async function createQwenStream(
 
   const chatId = chatEntry.chatId;
   const chatHeaders = chatEntry.headers;
-  const actualParentId: string | null = null;
+  const actualParentId: string | null = forcedParentId !== undefined
+    ? forcedParentId
+    : getSessionParent(chatId) ?? null;
 
   // Process pending multimodal uploads — requires full headers with bx-ua/bx-umidtoken
   let resolvedFiles = files || [];
@@ -401,6 +414,13 @@ export async function createQwenStream(
   const timestamp = Math.floor(Date.now() / 1000);
   const fid = crypto.randomUUID();
   const model = modelId.replace('-no-thinking', '');
+  const thinkingEnabled = reasoningEffort !== 'fast';
+  const autoThinking = reasoningEffort === 'auto';
+  const thinkingMode = reasoningEffort === 'auto'
+    ? 'Auto'
+    : reasoningEffort === 'thinking'
+      ? 'Thinking'
+      : 'Fast';
 
   const payload: QwenPayload = {
     stream: true,
@@ -423,13 +443,13 @@ export async function createQwenStream(
         models: [model],
         chat_type: 't2t',
         feature_config: {
-          thinking_enabled: enableThinking,
+          thinking_enabled: thinkingEnabled,
           output_schema: 'phase',
           research_mode: 'normal',
-          auto_thinking: false,
-          thinking_mode: 'Thinking',
-          thinking_format: 'summary',
-          auto_search: false
+          auto_thinking: autoThinking,
+          thinking_mode: thinkingMode,
+          ...(thinkingEnabled ? { thinking_format: 'summary' } : {}),
+          auto_search: true
         },
         extra: {
           meta: {

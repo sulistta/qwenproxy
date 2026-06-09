@@ -13,6 +13,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { QwenAccount } from '../core/accounts.js';
 import { config } from '../core/config.js';
+import { getMockSessionId, isPlaywrightMockEnabled } from '../core/test-mode.js';
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit' | 'chrome' | 'edge';
 
@@ -105,7 +106,7 @@ function getUiMutex(accountId: string): Mutex {
 }
 
 export async function getCookies(accountId?: string): Promise<string> {
-  if (process.env.TEST_MOCK_PLAYWRIGHT) return 'token=mock';
+  if (isPlaywrightMockEnabled()) return 'token=mock';
   const cacheKey = accountId || 'global';
   const now = Date.now();
   const cached = cookieCaches.get(cacheKey);
@@ -121,14 +122,14 @@ export async function getCookies(accountId?: string): Promise<string> {
 }
 
 export async function getBasicHeaders(accountId?: string): Promise<{ cookie: string, userAgent: string, bxV: string, bxUa?: string, bxUmidtoken?: string }> {
-  if (process.env.TEST_MOCK_PLAYWRIGHT) return { cookie: 'token=mock', userAgent: 'mock', bxV: '2.5.36' };
+  if (isPlaywrightMockEnabled()) return { cookie: 'token=mock', userAgent: 'mock', bxV: '2.5.36' };
   
   let page = accountId ? accountPages.get(accountId) : activePage;
   if (accountId && !page) {
-    const { getAccountCredentials } = await import('../core/accounts.ts');
+    const { getAccountCredentials } = await import('../core/accounts.js');
     const creds = getAccountCredentials(accountId);
     if (creds) {
-      await initPlaywrightForAccount(creds, config.browser.headless);
+      await initPlaywrightForAccount(creds, config.browser.headless, config.browser.type);
       page = accountPages.get(accountId);
     }
   }
@@ -152,13 +153,13 @@ export async function getBasicHeaders(accountId?: string): Promise<{ cookie: str
   return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
 }
 
-export async function initPlaywright(headless = true, browserType: BrowserType = 'chromium') {
-  if (process.env.TEST_MOCK_PLAYWRIGHT) return;
+export async function initPlaywright(headless = config.browser.headless, browserType: BrowserType = config.browser.type) {
+  if (isPlaywrightMockEnabled()) return;
   if (context) {
     return;
   }
 
-  const profilePath = path.resolve('qwen_profiles', '_default');
+  const profilePath = path.resolve(config.browser.userDataDir, '_default');
   const { engine, channel } = resolveBrowserEngine(browserType);
 
   console.log(`[Playwright] Launching ${browserType}...`);
@@ -166,9 +167,10 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
   context = await engine.launchPersistentContext(profilePath, {
     headless,
     channel,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    userAgent: config.browser.userAgent,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
+      ...config.browser.args,
       '--disable-blink-features=AutomationControlled'
     ]
   });
@@ -181,15 +183,10 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
 
   activePage = await context.newPage();
 
-  const hasCredentials = !!(process.env.QWEN_EMAIL && process.env.QWEN_PASSWORD);
   const hasValidSession = await checkValidSession();
 
-  if (!hasValidSession && !hasCredentials) {
-    console.warn('[Playwright] No valid session AND no credentials in .env. Manual login will be required.');
-  }
-
   if (!hasValidSession) {
-    await attemptAutoLogin();
+    console.warn('[Playwright] No valid default session. Use the TUI account manager to add or refresh accounts.');
   }
 }
 
@@ -207,31 +204,8 @@ async function checkValidSession(): Promise<boolean> {
   }
 }
 
-async function attemptAutoLogin(): Promise<void> {
-  const email = process.env.QWEN_EMAIL;
-  const password = process.env.QWEN_PASSWORD;
-  if (!email || !password) return;
-  console.log('[Playwright] Attempting auto-login with credentials from .env...');
-  try {
-    const success = await loginToQwen(email, password);
-    if (success) {
-      console.log('[Playwright] Auto-login successful.');
-      return;
-    }
-    console.warn('[Playwright] API login failed, trying UI fallback...');
-    const uiSuccess = await loginToQwenUI(email, password);
-    if (uiSuccess) {
-      console.log('[Playwright] UI login fallback successful.');
-    } else {
-      console.warn('[Playwright] Both API and UI login failed. Manual login may be required.');
-    }
-  } catch (err: any) {
-    console.error('[Playwright] Auto-login error:', err.message);
-  }
-}
-
 export async function closePlaywright() {
-  if (process.env.TEST_MOCK_PLAYWRIGHT) return;
+  if (isPlaywrightMockEnabled()) return;
   for (const cache of accountHeaderCaches.values()) {
     cache.refreshInProgress = false;
   }
@@ -249,48 +223,6 @@ export async function loginToQwen(email: string, password: string): Promise<bool
   if (!activePage) throw new Error('Playwright not initialized');
   console.log(`[Playwright] Attempting API login for ${email}...`);
   return loginToQwenWithContext(activePage.context(), activePage, email, password);
-}
-
-async function loginToQwenUI(email: string, password: string): Promise<boolean> {
-  if (!activePage) throw new Error('Playwright not initialized');
-
-  console.log('[Playwright] Attempting UI login...');
-  await activePage.goto('https://chat.qwen.ai/auth', { waitUntil: 'domcontentloaded' });
-  await sleep(2000);
-
-  if (!activePage.url().includes('/auth')) {
-    console.log('[Playwright] Already logged in');
-    return true;
-  }
-
-  try {
-    await activePage.waitForSelector('input[type="email"], input[placeholder*="Email"]', { timeout: 5000 });
-  } catch {
-    if (activePage.url().includes('/auth')) throw new Error('Email input not found');
-    console.log('[Playwright] Already logged in');
-    return true;
-  }
-
-  console.log('[Playwright] UI: Filling email...');
-  await activePage.fill('input[type="email"], input[placeholder*="Email"]', email);
-  await activePage.keyboard.press('Enter');
-  await sleep(1000);
-
-  await activePage.waitForSelector('input[type="password"]', { timeout: 10000 });
-  console.log('[Playwright] UI: Filling password...');
-  await activePage.fill('input[type="password"]', password);
-  await activePage.keyboard.press('Enter');
-
-  await sleep(2000);
-
-  const isLogged = !activePage.url().includes('auth') && !activePage.url().includes('login');
-  if (isLogged) {
-    console.log('[Playwright] UI login OK');
-    return true;
-  }
-
-  console.log('[Playwright] UI login failed');
-  return false;
 }
 
 export async function getQwenHeaders(forceNew = false, accountId?: string): Promise<{ headers: Record<string, string>, chatSessionId: string, parentMessageId: string | null }> {
@@ -373,8 +305,8 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
   const cacheKey = accountId || 'global';
   const cache = getAccountHeaderCache(cacheKey);
 
-  if (process.env.TEST_MOCK_PLAYWRIGHT) {
-    const mockSessionId = process.env.TEST_SESSION_ID || 'mock-session';
+  if (isPlaywrightMockEnabled()) {
+    const mockSessionId = getMockSessionId();
     return {
       headers: {
         'authorization': 'Bearer MOCK',
@@ -396,10 +328,10 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
   }
 
   if (accountId && !accountPages.has(accountId)) {
-    const { getAccountCredentials } = await import('../core/accounts.ts');
+    const { getAccountCredentials } = await import('../core/accounts.js');
     const creds = getAccountCredentials(accountId);
     if (creds) {
-      await initPlaywrightForAccount(creds, config.browser.headless);
+      await initPlaywrightForAccount(creds, config.browser.headless, config.browser.type);
     }
   }
 
@@ -420,23 +352,7 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
   const isLoginPage = page.url().includes('login') || (await page.$('input[type="email"], input[placeholder*="Email"]'));
   if (isLoginPage) {
     if (!accountId) {
-      const email = process.env.QWEN_EMAIL;
-      const password = process.env.QWEN_PASSWORD;
-
-      if (email && password) {
-        console.log('[Playwright] Detected login page. Attempting automated login...');
-        try {
-          const loggedIn = await loginToQwen(email, password);
-          if (!loggedIn) {
-            throw new Error('loginToQwen returned false');
-          }
-          console.log('[Playwright] Automated login successful.');
-        } catch (err: any) {
-          console.error('[Playwright] Automated login failed:', err.message);
-        }
-      } else {
-        console.warn('[Playwright] Detected login page but QWEN_EMAIL/PASSWORD not provided in .env');
-      }
+      console.warn('[Playwright] Default session is not logged in. Add or refresh an account in the TUI.');
     } else {
       const { getAccountCredentials } = await import('../core/accounts.js');
       const creds = getAccountCredentials(accountId);
@@ -461,7 +377,7 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
     const timeout = setTimeout(async () => {
       console.error(`[Playwright] Timeout waiting for Qwen headers for ${cacheKey}. Current URL:`, page.url());
       try {
-        const screenshotPath = path.resolve(`qwen_profiles/error_${cacheKey}.png`);
+        const screenshotPath = path.resolve(config.browser.userDataDir, `error_${cacheKey}.png`);
         await page.screenshot({ path: screenshotPath });
         console.log(`[Playwright] Error screenshot saved to ${screenshotPath}`);
       } catch (err: any) {
@@ -572,8 +488,8 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
   });
 }
 
-export async function initPlaywrightForAccount(account: QwenAccount, headless = true, browserType: BrowserType = 'chromium') {
-  const profilePath = path.resolve('qwen_profiles', account.id);
+export async function initPlaywrightForAccount(account: QwenAccount, headless = config.browser.headless, browserType: BrowserType = config.browser.type) {
+  const profilePath = path.resolve(config.browser.userDataDir, account.id);
   const { engine, channel } = resolveBrowserEngine(browserType);
 
   console.log(`[Playwright] Launching ${browserType} for account ${account.email}...`);
@@ -581,9 +497,10 @@ export async function initPlaywrightForAccount(account: QwenAccount, headless = 
   const acctContext = await engine.launchPersistentContext(profilePath, {
     headless,
     channel,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    userAgent: config.browser.userAgent,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
+      ...config.browser.args,
       '--disable-blink-features=AutomationControlled'
     ]
   });
@@ -606,16 +523,17 @@ export async function initPlaywrightForAccount(account: QwenAccount, headless = 
   }
 }
 
-export async function launchManualLoginAccount(accountId: string, browserType: BrowserType = 'chromium'): Promise<{ context: BrowserContext, page: Page }> {
-  const profilePath = path.resolve('qwen_profiles', accountId);
+export async function launchManualLoginAccount(accountId: string, browserType: BrowserType = config.browser.type): Promise<{ context: BrowserContext, page: Page }> {
+  const profilePath = path.resolve(config.browser.userDataDir, accountId);
   const { engine, channel } = resolveBrowserEngine(browserType);
 
   const acctContext = await engine.launchPersistentContext(profilePath, {
     headless: false,
     channel,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    userAgent: config.browser.userAgent,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
+      ...config.browser.args,
       '--disable-blink-features=AutomationControlled'
     ]
   });

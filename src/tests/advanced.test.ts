@@ -1,11 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert';
-
-process.env.TEST_MOCK_PLAYWRIGHT = 'true';
-
-delete process.env.API_KEY;
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { app } from '../api/server.js';
+import { DEFAULT_CONFIG, reloadConfig, saveConfig } from '../core/config.js';
+import { enablePlaywrightMock } from '../core/test-mode.js';
+
+enablePlaywrightMock();
+const TEST_CONFIG_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'qwenproxy-advanced-')), 'config.json');
+saveConfig(DEFAULT_CONFIG, TEST_CONFIG_PATH);
+reloadConfig(TEST_CONFIG_PATH);
 
 function setupFetchMock(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   const originalFetch = globalThis.fetch;
@@ -181,7 +187,7 @@ test('session-parent-tracking: appends messages using response message_id as par
   });
 
   try {
-    process.env.TEST_SESSION_ID = 'test-session-parent-tracking';
+    enablePlaywrightMock({ sessionId: 'test-session-parent-tracking' });
     // Turn 1
     const req1 = new Request('http://localhost/v1/chat/completions', {
       method: 'POST',

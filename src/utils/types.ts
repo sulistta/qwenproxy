@@ -17,6 +17,8 @@ export type ToolChoice = 'auto' | 'none' | 'required' | {
   function: { name: string };
 };
 
+export type QwenReasoningEffort = 'auto' | 'thinking' | 'fast';
+
 // --- Message Types ---
 
 export interface ToolCallFunction {
@@ -49,6 +51,7 @@ export interface OpenAIRequest {
   model: string;
   messages: Message[];
   stream?: boolean;
+  reasoning_effort?: QwenReasoningEffort;
   tools?: FunctionToolDefinition[];
   tool_choice?: ToolChoice;
   stream_options?: {

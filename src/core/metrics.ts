@@ -113,6 +113,7 @@ export class Metrics extends EventEmitter {
         this.exportCallback(this.metrics)
       }
     }, config.metrics.interval)
+    this.collectionInterval.unref?.()
   }
 
   private collectSystemMetrics(): void {

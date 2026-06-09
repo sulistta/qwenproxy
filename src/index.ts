@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { startServer } from "./api/server.js";
 
 startServer().catch((error) => {

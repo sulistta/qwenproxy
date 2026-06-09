@@ -14,7 +14,8 @@ Proxy API local compatível com OpenAI que roteia requisições para os modelos 
 
 ```bash
 git clone https://github.com/sulistta/qwenproxy.git && cd qwenproxy
-npm run setup    # Instala deps + Playwright + configura .env
+npm run setup    # Instala deps + Playwright
+npm run config   # Abre o console para configurar servidor, navegador, chave e contas
 npm start        # Inicia o proxy em http://localhost:3000
 ```
 
@@ -93,22 +94,19 @@ docker-compose up -d
 
 ## Configuração
 
-Crie o arquivo `.env` na raiz do projeto (veja `.env.example`):
+A configuração é feita pelo console interativo e salva em `data/config.json`.
+O runtime lê as opções persistidas pelo console, não arquivos de ambiente.
 
-```env
-# Porta do servidor (default: 3000)
-PORT=3000
-
-# Chave de API para proteger os endpoints (opcional)
-API_KEY=sua-chave-secreta-aqui
-
-# Credenciais Qwen para login automático (modo single-account)
-QWEN_EMAIL=seu-email@exemplo.com
-QWEN_PASSWORD=sua-senha-aqui
-
-# Navegador (chromium, firefox, chrome, edge)
-BROWSER=chromium
+```bash
+npm run config
 ```
+
+No console, use **Settings** para ajustar:
+- Host e porta do servidor
+- Chave de API opcional para proteger `/v1/*`
+- Navegador, modo headless e diretório de perfis
+- URLs do Qwen
+- Timeouts, cache, métricas e watchdog
 
 ---
 
@@ -117,13 +115,8 @@ BROWSER=chromium
 As contas são armazenadas em SQLite (`data/qwenproxy.db`). Use o CLI interativo para gerenciar:
 
 ```bash
-# Abrir o gerenciador de contas
-npm run login
-
-# Com navegador específico
-npm run login:firefox
-npm run login:chrome
-npm run login:edge
+# Abrir o console de configuração e contas
+npm run config
 ```
 
 O menu interativo permite:
@@ -131,6 +124,7 @@ O menu interativo permite:
 - **[M]** Adicionar conta via login manual no navegador
 - **[R]** Remover uma conta
 - **[L]** Login em todas as contas (inicializar sessões)
+- **[S]** Ajustar configurações do servidor, navegador e timeouts
 
 > Na primeira execução, se existir um `accounts.json` antigo, as contas serão migradas automaticamente para SQLite.
 
@@ -141,11 +135,10 @@ O menu interativo permite:
 ### Iniciar o servidor
 
 ```bash
-npm start                  # Chromium (padrão)
-npm run start:chrome       # Google Chrome
-npm run start:firefox      # Firefox
-npm run start:edge         # Microsoft Edge
+npm start
 ```
+
+O navegador usado pelo servidor é definido em `npm run config`.
 
 O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 
@@ -164,21 +157,34 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 
 ### OpenAI SDK (Node.js)
 
-```typescript
+```javascript
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
   baseURL: 'http://localhost:3000/v1',
-  apiKey: process.env.API_KEY || 'sk-no-key-required'
+  apiKey: 'sua-chave-configurada-no-console'
 });
 
 const completion = await openai.chat.completions.create({
   model: 'qwen-plus',
-  messages: [{ role: 'user', content: 'Explique como funciona o Playwright.' }]
+  messages: [{ role: 'user', content: 'Explique como funciona o Playwright.' }],
+  reasoning_effort: 'auto'
 });
 
 console.log(completion.choices[0].message.content);
 ```
+
+O campo `reasoning_effort` aceita:
+
+- `auto`: o Qwen decide quando usar pensamento.
+- `thinking`: força o modo de pensamento.
+- `fast`: responde sem a etapa de pensamento.
+
+Esses valores são uma extensão do QwenProxy; clientes com tipos OpenAI estritos
+podem exigir um cast ou o envio direto do JSON.
+
+Quando o campo é omitido, o proxy usa `thinking`. Modelos com o sufixo
+`-no-thinking` continuam selecionando `fast` por compatibilidade.
 
 ### cURL
 
@@ -189,6 +195,7 @@ curl http://localhost:3000/v1/chat/completions \
   -d '{
     "model": "qwen-plus",
     "messages": [{"role": "user", "content": "Hello!"}],
+    "reasoning_effort": "fast",
     "stream": true
   }'
 ```
@@ -205,9 +212,7 @@ services:
     build: .
     container_name: qwenproxy
     ports:
-      - "${PORT:-3000}:3000"
-    env_file:
-      - .env
+      - "3000:3000"
     volumes:
       - ./data:/app/data               # Banco SQLite
       - ./qwen_profiles:/app/qwen_profiles  # Sessões dos navegadores
@@ -274,7 +279,7 @@ qwenproxy/
 
 | Problema | Solução |
 |----------|---------|
-| Porta em uso | Altere `PORT` no `.env` ou encerre o processo na porta 3000 |
+| Porta em uso | Ajuste a porta em `npm run config` ou encerre o processo na porta 3000 |
 | Navegador não abre | Execute `npx playwright install` |
 | Sessão expirada | Execute `npm run login` para renovar cookies |
 | Rate limit em todas as contas | Adicione mais contas via `npm run login` |

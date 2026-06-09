@@ -59,6 +59,7 @@ export class MemoryCache {
         }
       }
     }, 60000)
+    this.cleanupInterval.unref?.()
   }
 
   async connect(): Promise<void> {

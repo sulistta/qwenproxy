@@ -23,7 +23,7 @@ app.use('*', async (c, next) => {
 })
 
 app.use('/v1/*', async (c, next) => {
-  const apiKey = process.env.API_KEY || config.apiKey
+  const apiKey = config.apiKey
   if (apiKey) {
     const auth = c.req.header('Authorization')
     if (!auth?.startsWith('Bearer ')) {
@@ -75,13 +75,13 @@ export async function startServer(): Promise<void> {
 
   const { initPlaywright, initPlaywrightForAccount, getQwenHeaders } = await import('../services/playwright.js')
   
-  await initPlaywright(config.browser.headless)
+  await initPlaywright(config.browser.headless, config.browser.type)
   
   if (accounts.length > 0) {
     console.log(`[Server] Pre-warming ${accounts.length} configured account(s) in parallel...`)
     await Promise.all(
       accounts.map(account =>
-        initPlaywrightForAccount(account, config.browser.headless).catch((err: any) => {
+        initPlaywrightForAccount(account, config.browser.headless, config.browser.type).catch((err: any) => {
           console.error(`[Server] Failed to initialize account ${account.email}:`, err.message)
         })
       )

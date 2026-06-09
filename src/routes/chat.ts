@@ -12,7 +12,7 @@ import { Context } from 'hono';
 import { stream as honoStream } from 'hono/streaming';
 import crypto from 'crypto';
 import { createQwenStream, updateSessionParent, RetryableQwenStreamError } from '../services/qwen.js';
-import { OpenAIRequest, ChoiceDelta, Message } from '../utils/types.js';
+import { OpenAIRequest, ChoiceDelta, Message, QwenReasoningEffort } from '../utils/types.js';
 import { registry } from '../tools/registry.js';
 import type { FunctionToolDefinition } from '../tools/types.js';
 import { robustParseJSON } from '../utils/json.js';
@@ -155,6 +155,16 @@ export async function chatCompletions(c: Context) {
   try {
     const body: OpenAIRequest = await c.req.json();
     const isStream = body.stream ?? false;
+    const supportedReasoningEfforts: QwenReasoningEffort[] = ['auto', 'thinking', 'fast'];
+    if (body.reasoning_effort !== undefined && !supportedReasoningEfforts.includes(body.reasoning_effort)) {
+      return c.json({
+        error: {
+          message: 'reasoning_effort must be one of: auto, thinking, fast',
+          type: 'invalid_request_error',
+          param: 'reasoning_effort',
+        },
+      }, 400);
+    }
     
     // Extract the prompt
     let prompt = '';
@@ -280,7 +290,8 @@ export async function chatCompletions(c: Context) {
       finalPrompt += '\n\n[CRITICAL REMINDER: You MUST use the exact <tool_call> JSON format specified in the system instructions. Do not hallucinate tool names or output raw JSON without the tags.]';
     }
 
-    const isThinkingModel = !body.model.includes('no-thinking');
+    const reasoningEffort: QwenReasoningEffort = body.reasoning_effort
+      ?? (body.model.includes('no-thinking') ? 'fast' : 'thinking');
     
     // A session is new if it doesn't have any assistant messages yet.
     // This handles cases where the first request has [System, User] messages.
@@ -322,9 +333,9 @@ export async function chatCompletions(c: Context) {
         try {
           const result = await createQwenStream(
             finalPrompt,
-            isThinkingModel,
+            reasoningEffort,
             body.model,
-            null, // Always force new chat for concurrency isolation
+            isNewSession ? null : undefined,
             accountId === 'global' ? undefined : accountId,
             undefined,
             pendingMultimodal.length > 0 ? pendingMultimodal : undefined
@@ -454,10 +465,11 @@ export async function chatCompletions(c: Context) {
         });
       }
 
+      const effectivePromptTokens = parserState.promptTokens || estimateTokenCount(finalPrompt);
       const usage = {
-        prompt_tokens: parserState.promptTokens,
+        prompt_tokens: effectivePromptTokens,
         completion_tokens: parserState.completionTokens,
-        total_tokens: parserState.promptTokens + parserState.completionTokens,
+        total_tokens: effectivePromptTokens + parserState.completionTokens,
         prompt_tokens_details: { cached_tokens: 0 }
       };
       const message: any = { role: 'assistant', content: toolCallsOut.length ? null : finalContent };
@@ -482,7 +494,8 @@ export async function chatCompletions(c: Context) {
     }
 
     // Disable Nagle's algorithm to transmit small chunks immediately without buffering delay
-    const socket = (c.env as any)?.incoming?.socket || (c.req.raw as any).socket;
+    const honoState = c as any;
+    const socket = honoState['env']?.incoming?.socket || (c.req.raw as any).socket;
     if (socket && typeof socket.setNoDelay === 'function') {
       socket.setNoDelay(true);
     }
@@ -737,10 +750,11 @@ export async function chatCompletions(c: Context) {
           }
         }
 
+        const effectivePromptTokens = promptTokens || estimateTokenCount(finalPrompt);
         const usage = {
-          prompt_tokens: promptTokens,
+          prompt_tokens: effectivePromptTokens,
           completion_tokens: completionTokens,
-          total_tokens: promptTokens + completionTokens,
+          total_tokens: effectivePromptTokens + completionTokens,
           prompt_tokens_details: { cached_tokens: 0 }
         };
 

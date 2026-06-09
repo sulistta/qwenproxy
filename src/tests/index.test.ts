@@ -1,12 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert';
-
-process.env.TEST_MOCK_PLAYWRIGHT = 'true';
-// Ensure API_KEY is empty by default for existing tests
-process.env.API_KEY = '';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { app } from '../api/server.js';
+import { DEFAULT_CONFIG, reloadConfig, saveConfig } from '../core/config.js';
+import { enablePlaywrightMock } from '../core/test-mode.js';
 import { initPlaywright, closePlaywright } from '../services/playwright.ts';
+
+enablePlaywrightMock();
+const TEST_CONFIG_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'qwenproxy-index-')), 'config.json');
+saveConfig(DEFAULT_CONFIG, TEST_CONFIG_PATH);
+reloadConfig(TEST_CONFIG_PATH);
 
 test('Health check endpoint returns 200', async () => {
   const req = new Request('http://localhost/health');
@@ -222,8 +228,11 @@ test('Chat Completions returns a JSON chat.completion object for non-streaming r
 });
 
 test('API Key protection', async () => {
-  const originalApiKey = process.env.API_KEY;
-  process.env.API_KEY = 'test-api-key';
+  saveConfig({
+    ...DEFAULT_CONFIG,
+    apiKey: 'test-api-key',
+  }, TEST_CONFIG_PATH);
+  reloadConfig(TEST_CONFIG_PATH);
 
   try {
     // 1. Test request without API Key
@@ -253,7 +262,8 @@ test('API Key protection', async () => {
       globalThis.fetch = originalFetch;
     }
   } finally {
-    process.env.API_KEY = originalApiKey;
+    saveConfig(DEFAULT_CONFIG, TEST_CONFIG_PATH);
+    reloadConfig(TEST_CONFIG_PATH);
   }
 });
 

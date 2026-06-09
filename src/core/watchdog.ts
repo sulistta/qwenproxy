@@ -22,6 +22,7 @@ export class Watchdog extends EventEmitter {
         this.consecutiveFailures++
       })
     }, config.watchdog.checkInterval)
+    this.checkInterval.unref?.()
 
     this.emit('started')
   }

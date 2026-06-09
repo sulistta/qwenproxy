@@ -1,5 +1,6 @@
 import { QwenAccount, loadAccounts } from './accounts.js'
 import { config } from './config.js'
+import { isPlaywrightMockEnabled } from './test-mode.js'
 
 let currentIndex = 0
 
@@ -14,9 +15,18 @@ const DEFAULT_COOLDOWN_MS = 3 * 60 * 1000 // 3 minutes
 
 let accountsCache: QwenAccount[] | null = null
 let accountsCacheTimestamp = 0
+let testAccountsOverride: QwenAccount[] | null = null
 const ACCOUNTS_CACHE_TTL = config.cache.defaultTTL * 1000
 
 function getCachedAccounts(): QwenAccount[] {
+  if (testAccountsOverride) {
+    return testAccountsOverride
+  }
+
+  if (isPlaywrightMockEnabled()) {
+    return [{ id: 'global', email: 'mock@qwenproxy.test', password: '' }]
+  }
+
   const now = Date.now()
   if (!accountsCache || (now - accountsCacheTimestamp) > ACCOUNTS_CACHE_TTL) {
     accountsCache = loadAccounts()
@@ -28,6 +38,12 @@ function getCachedAccounts(): QwenAccount[] {
 export function invalidateAccountsCache(): void {
   accountsCache = null
   accountsCacheTimestamp = 0
+}
+
+export function setAccountManagerAccountsForTests(accounts: QwenAccount[] | null): void {
+  testAccountsOverride = accounts
+  currentIndex = 0
+  invalidateAccountsCache()
 }
 
 export function markAccountRateLimited(accountId: string, cooldownMs?: number, reason?: string): void {
