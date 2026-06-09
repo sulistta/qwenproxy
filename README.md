@@ -146,6 +146,8 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 |------|--------|-----------|
 | `/v1/chat/completions` | POST | Chat completions (streaming + non-streaming) |
 | `/v1/chat/completions/stop` | POST | Abortar uma geração ativa |
+| `/v1/deep-research` | POST | Executar Deep Research nativo do Qwen e retornar relatório com fontes |
+| `/v1/images/generations` | POST | Gerar imagem pelo modo nativo `t2i` do Qwen |
 | `/v1/models` | GET | Listar modelos disponíveis |
 | `/v1/models/:model` | GET | Informações de um modelo específico |
 | `/health` | GET | Health check com status do sistema |
@@ -208,6 +210,56 @@ curl http://localhost:3000/v1/chat/completions \
     "stream": true
   }'
 ```
+
+### Deep Research
+
+```bash
+curl http://localhost:3000/v1/deep-research \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sua-chave" \
+  -d '{
+    "query": "Pesquise o estado atual do React Server Components",
+    "model": "qwen3.7-plus"
+  }'
+```
+
+Resposta:
+
+```json
+{
+  "object": "deep_research.result",
+  "report": "...",
+  "sources": [
+    { "citation_index": 1, "title": "...", "url": "https://..." }
+  ]
+}
+```
+
+### Geração de Imagem
+
+```bash
+curl http://localhost:3000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sua-chave" \
+  -d '{
+    "prompt": "Foto de produto em fundo branco, luz suave",
+    "size": "1:1",
+    "model": "qwen3.7-plus"
+  }'
+```
+
+Resposta:
+
+```json
+{
+  "created": 123,
+  "data": [
+    { "url": "https://..." }
+  ]
+}
+```
+
+Exemplos de custom tools para OpenCode estão em `examples/opencode/tools/`.
 
 ---
 

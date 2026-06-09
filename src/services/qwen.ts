@@ -90,7 +90,11 @@ async function getBasicQwenHeaders(accountId?: string): Promise<Record<string, s
   };
 }
 
-async function createRealQwenChat(header: Record<string, string>): Promise<string> {
+async function createRealQwenChat(
+  header: Record<string, string>,
+  model = 'qwen3.7-plus',
+  chatType = 't2t',
+): Promise<string> {
   const response = await fetch('https://chat.qwen.ai/api/v2/chats/new', {
     method: 'POST',
     headers: {
@@ -106,9 +110,9 @@ async function createRealQwenChat(header: Record<string, string>): Promise<strin
     },
     body: JSON.stringify({
       title: 'Nova Conversa',
-      models: ['qwen3.7-plus'],
+      models: [model],
       chat_mode: 'normal',
-      chat_type: 't2t',
+      chat_type: chatType,
       timestamp: Date.now(),
       project_id: '',
     }),
@@ -200,6 +204,7 @@ export interface QwenMessage {
     thinking_mode: string;
     thinking_format?: string;
     auto_search: boolean;
+    thinking_budget?: number;
   };
   extra: {
     meta: {
@@ -220,34 +225,72 @@ export interface QwenPayload {
   parent_id: string | null;
   messages: QwenMessage[];
   timestamp: number;
+  size?: string;
 }
 
 let cachedModels: any[] | null = null;
 let lastModelsFetch = 0;
 
-const nativeToolsConfigured = new Set<string>();
+interface NativeToolCapabilities {
+  webSearch: boolean;
+  imageGeneration: boolean;
+}
+
+const nativeToolsConfigured = new Map<string, NativeToolCapabilities>();
 const nativeToolsConfigurationPromises = new Map<string, Promise<void>>();
 
-export async function configureNativeTools(accountId?: string): Promise<void> {
+function coversNativeTools(
+  current: NativeToolCapabilities | undefined,
+  target: NativeToolCapabilities,
+): boolean {
+  return Boolean(
+    current
+      && (!target.webSearch || current.webSearch)
+      && (!target.imageGeneration || current.imageGeneration)
+  );
+}
+
+function mergeNativeTools(
+  current: NativeToolCapabilities | undefined,
+  target: NativeToolCapabilities,
+): NativeToolCapabilities {
+  return {
+    webSearch: Boolean(current?.webSearch || target.webSearch),
+    imageGeneration: Boolean(current?.imageGeneration || target.imageGeneration),
+  };
+}
+
+export async function configureNativeTools(
+  accountId?: string,
+  requested: Partial<NativeToolCapabilities> = { webSearch: true },
+): Promise<void> {
   const cacheKey = accountId || 'global';
-  if (nativeToolsConfigured.has(cacheKey)) return;
+  const target: NativeToolCapabilities = {
+    webSearch: Boolean(requested.webSearch),
+    imageGeneration: Boolean(requested.imageGeneration),
+  };
+  if (coversNativeTools(nativeToolsConfigured.get(cacheKey), target)) return;
   if (isPlaywrightMockEnabled()) {
-    nativeToolsConfigured.add(cacheKey);
+    nativeToolsConfigured.set(cacheKey, mergeNativeTools(nativeToolsConfigured.get(cacheKey), target));
     return;
   }
   const existing = nativeToolsConfigurationPromises.get(cacheKey);
-  if (existing) return existing;
+  if (existing) {
+    await existing;
+    if (coversNativeTools(nativeToolsConfigured.get(cacheKey), target)) return;
+  }
 
   const configuration = (async () => {
     try {
       const { headers } = await getQwenHeaders(false, accountId);
+      const enabledTools = mergeNativeTools(nativeToolsConfigured.get(cacheKey), target);
 
       const payload = {
         tools_enabled: {
           web_extractor: false,
           web_search_image: false,
-          web_search: true,
-          image_gen_tool: false,
+          web_search: enabledTools.webSearch,
+          image_gen_tool: enabledTools.imageGeneration,
           code_interpreter: false,
           history_retriever: false,
           image_edit_tool: false,
@@ -289,7 +332,7 @@ export async function configureNativeTools(accountId?: string): Promise<void> {
         throw new Error(`Failed to configure native tools: ${response.status} - ${text}`);
       }
       console.log(`[Qwen] Native tool capabilities configured for ${cacheKey}.`);
-      nativeToolsConfigured.add(cacheKey);
+      nativeToolsConfigured.set(cacheKey, enabledTools);
     } catch (err: any) {
       console.error(`[Qwen] Error configuring native tools for ${cacheKey}: ${err.message}`);
       throw err;
@@ -365,6 +408,40 @@ export interface QwenFileEntry {
   [key: string]: any;
 }
 
+export type QwenChatType = 't2t' | 'search' | 't2i' | 'deep_research' | 'artifacts' | 'learn' | 'image_edit';
+
+export interface QwenStreamOptions {
+  chatType?: QwenChatType;
+  size?: string;
+  researchMode?: 'normal' | 'deep';
+  autoSearch?: boolean;
+  imageGeneration?: boolean;
+}
+
+async function getChatForRequest(
+  accountId: string | undefined,
+  model: string,
+  chatType: QwenChatType,
+): Promise<WarmPoolEntry> {
+  if (chatType === 't2t') {
+    return getWarmedChat(accountId);
+  }
+
+  const key = accountId || 'global';
+  if (isPlaywrightMockEnabled()) {
+    return {
+      chatId: getMockSessionId(),
+      headers: await getBasicQwenHeaders(undefined),
+      accountId: key,
+      timestamp: Date.now(),
+    };
+  }
+
+  const headers = await getBasicQwenHeaders(accountId);
+  const chatId = await createRealQwenChat(headers, model, chatType);
+  return { chatId, headers, accountId: key, timestamp: Date.now() };
+}
+
 export async function createQwenStream(
   prompt: string,
   reasoningEffort: QwenReasoningEffort,
@@ -373,15 +450,22 @@ export async function createQwenStream(
   forcedParentId?: string | null,
   accountId?: string,
   files?: QwenFileEntry[],
-  pendingMultimodal?: Array<Array<{ type: string; text?: string; image_url?: { url: string }; video_url?: { url: string }; audio_url?: { url: string }; file_url?: { url: string } }>>
+  pendingMultimodal?: Array<Array<{ type: string; text?: string; image_url?: { url: string }; video_url?: { url: string }; audio_url?: { url: string }; file_url?: { url: string } }>>,
+  options: QwenStreamOptions = {},
 ): Promise<{ stream: ReadableStream, headers: Record<string, string>, uiSessionId: string, controller: AbortController, accountId: string }> {
-  if (webSearch) {
-    await configureNativeTools(accountId);
+  const chatType = options.chatType ?? 't2t';
+  const model = modelId.replace('-no-thinking', '');
+  const autoSearch = options.autoSearch ?? webSearch;
+  if (autoSearch || options.imageGeneration) {
+    await configureNativeTools(accountId, {
+      webSearch: autoSearch,
+      imageGeneration: Boolean(options.imageGeneration),
+    });
   }
 
   let chatEntry: WarmPoolEntry;
   try {
-    chatEntry = await getWarmedChat(accountId);
+    chatEntry = await getChatForRequest(accountId, model, chatType);
   } catch (err: any) {
     if (err.message?.includes('chat is in progress') || err.message?.includes('The chat is in progress')) {
       const retryAfterMs = 2000 + Math.floor(Math.random() * 2000);
@@ -431,14 +515,14 @@ export async function createQwenStream(
 
   const timestamp = Math.floor(Date.now() / 1000);
   const fid = crypto.randomUUID();
-  const model = modelId.replace('-no-thinking', '');
-  const thinkingEnabled = reasoningEffort !== 'fast';
-  const autoThinking = reasoningEffort === 'auto';
-  const thinkingMode = reasoningEffort === 'auto'
+  const thinkingEnabled = chatType === 'deep_research' || reasoningEffort !== 'fast';
+  const autoThinking = chatType === 'deep_research' || reasoningEffort === 'auto';
+  const thinkingMode = autoThinking
     ? 'Auto'
     : reasoningEffort === 'thinking'
       ? 'Thinking'
       : 'Fast';
+  const researchMode = options.researchMode ?? (chatType === 'deep_research' ? 'deep' : 'normal');
 
   const payload: QwenPayload = {
     stream: true,
@@ -459,27 +543,31 @@ export async function createQwenStream(
         files: resolvedFiles,
         timestamp: timestamp,
         models: [model],
-        chat_type: 't2t',
+        chat_type: chatType,
         feature_config: {
           thinking_enabled: thinkingEnabled,
           output_schema: 'phase',
-          research_mode: 'normal',
+          research_mode: researchMode,
           auto_thinking: autoThinking,
           thinking_mode: thinkingMode,
           ...(thinkingEnabled ? { thinking_format: 'summary' } : {}),
-          auto_search: webSearch
+          ...(chatType !== 't2t' && !thinkingEnabled ? { thinking_budget: 81920 } : {}),
+          auto_search: autoSearch
         },
         extra: {
           meta: {
-            subChatType: 't2t'
+            subChatType: chatType
           }
         },
-        sub_chat_type: 't2t',
+        sub_chat_type: chatType,
         parent_id: actualParentId
       }
     ],
     timestamp: timestamp + 1
   };
+  if (options.size && (chatType === 't2i' || chatType === 'image_edit')) {
+    payload.size = options.size;
+  }
 
   const url = `https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatId}`;
   const controller = new AbortController();
