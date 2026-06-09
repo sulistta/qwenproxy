@@ -168,7 +168,8 @@ const openai = new OpenAI({
 const completion = await openai.chat.completions.create({
   model: 'qwen-plus',
   messages: [{ role: 'user', content: 'Explique como funciona o Playwright.' }],
-  reasoning_effort: 'auto'
+  reasoning_effort: 'auto',
+  web_search: true
 });
 
 console.log(completion.choices[0].message.content);
@@ -186,6 +187,13 @@ podem exigir um cast ou o envio direto do JSON.
 Quando o campo é omitido, o proxy usa `thinking`. Modelos com o sufixo
 `-no-thinking` continuam selecionando `fast` por compatibilidade.
 
+O campo `web_search` é opcional e desativado por padrão. Quando definido como
+`true`, o Qwen pode pesquisar a web durante a resposta. As fontes citadas são:
+
+- adicionadas ao final de `message.content` em uma seção `Sources`;
+- retornadas de forma estruturada em `message.web_search_sources`;
+- emitidas em `delta.web_search_sources` no chunk final de respostas streaming.
+
 ### cURL
 
 ```bash
@@ -194,8 +202,9 @@ curl http://localhost:3000/v1/chat/completions \
   -H "Authorization: Bearer sua-chave" \
   -d '{
     "model": "qwen-plus",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "reasoning_effort": "fast",
+    "messages": [{"role": "user", "content": "Quais são as notícias mais recentes sobre Qwen?"}],
+    "reasoning_effort": "thinking",
+    "web_search": true,
     "stream": true
   }'
 ```

@@ -225,68 +225,81 @@ export interface QwenPayload {
 let cachedModels: any[] | null = null;
 let lastModelsFetch = 0;
 
-const nativeToolsDisabled = new Set<string>();
-const disablingNativeToolsInProgress = new Set<string>();
+const nativeToolsConfigured = new Set<string>();
+const nativeToolsConfigurationPromises = new Map<string, Promise<void>>();
 
-export async function disableNativeTools(accountId?: string): Promise<void> {
+export async function configureNativeTools(accountId?: string): Promise<void> {
   const cacheKey = accountId || 'global';
-  if (nativeToolsDisabled.has(cacheKey) || disablingNativeToolsInProgress.has(cacheKey)) {
+  if (nativeToolsConfigured.has(cacheKey)) return;
+  if (isPlaywrightMockEnabled()) {
+    nativeToolsConfigured.add(cacheKey);
     return;
   }
-  disablingNativeToolsInProgress.add(cacheKey);
+  const existing = nativeToolsConfigurationPromises.get(cacheKey);
+  if (existing) return existing;
 
-  try {
-    const { headers } = await getQwenHeaders(false, accountId);
+  const configuration = (async () => {
+    try {
+      const { headers } = await getQwenHeaders(false, accountId);
 
-    const payload = {
-      tools_enabled: {
-        web_extractor: false,
-        web_search_image: false,
-        web_search: false,
-        image_gen_tool: false,
-        code_interpreter: false,
-        history_retriever: false,
-        image_edit_tool: false,
-        bio: false,
-        image_zoom_in_tool: false
+      const payload = {
+        tools_enabled: {
+          web_extractor: false,
+          web_search_image: false,
+          web_search: true,
+          image_gen_tool: false,
+          code_interpreter: false,
+          history_retriever: false,
+          image_edit_tool: false,
+          bio: false,
+          image_zoom_in_tool: false,
+          image_search: false
+        }
+      };
+
+      console.log(`[Qwen] Configuring native tool capabilities for ${cacheKey}...`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      let response: Response;
+      try {
+        response = await fetch('https://chat.qwen.ai/api/v2/users/user/settings/update', {
+          method: 'POST',
+          headers: {
+            'accept': 'application/json, text/plain, */*',
+            'accept-language': 'pt-BR,pt;q=0.9',
+            'content-type': 'application/json',
+            'cookie': headers['cookie'],
+            'origin': 'https://chat.qwen.ai',
+            'referer': 'https://chat.qwen.ai/',
+            'user-agent': headers['user-agent'],
+            'x-request-id': crypto.randomUUID(),
+            'bx-ua': headers['bx-ua'],
+            'bx-umidtoken': headers['bx-umidtoken'],
+            'bx-v': headers['bx-v']
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeoutId);
       }
-    };
 
-    console.log(`[Qwen] Disabling native tools for ${cacheKey}...`);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-    const response = await fetch('https://chat.qwen.ai/api/v2/users/user/settings/update', {
-      method: 'POST',
-      headers: {
-        'accept': 'application/json, text/plain, */*',
-        'accept-language': 'pt-BR,pt;q=0.9',
-        'content-type': 'application/json',
-        'cookie': headers['cookie'],
-        'origin': 'https://chat.qwen.ai',
-        'referer': 'https://chat.qwen.ai/',
-        'user-agent': headers['user-agent'],
-        'x-request-id': crypto.randomUUID(),
-        'bx-ua': headers['bx-ua'],
-        'bx-umidtoken': headers['bx-umidtoken'],
-        'bx-v': headers['bx-v']
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const text = await response.text();
-      console.error(`[Qwen] Failed to disable native tools for ${cacheKey}: ${response.status} - ${text}`);
-    } else {
-      console.log(`[Qwen] Native tools disabled successfully for ${cacheKey}.`);
-      nativeToolsDisabled.add(cacheKey);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Failed to configure native tools: ${response.status} - ${text}`);
+      }
+      console.log(`[Qwen] Native tool capabilities configured for ${cacheKey}.`);
+      nativeToolsConfigured.add(cacheKey);
+    } catch (err: any) {
+      console.error(`[Qwen] Error configuring native tools for ${cacheKey}: ${err.message}`);
+      throw err;
+    } finally {
+      nativeToolsConfigurationPromises.delete(cacheKey);
     }
-  } catch (err: any) {
-    console.error(`[Qwen] Error disabling native tools for ${cacheKey}: ${err.message}`);
-  } finally {
-    disablingNativeToolsInProgress.delete(cacheKey);
-  }
+  })();
+
+  nativeToolsConfigurationPromises.set(cacheKey, configuration);
+  return configuration;
 }
 
 export async function fetchQwenModels(accountId?: string): Promise<any[]> {
@@ -355,12 +368,17 @@ export interface QwenFileEntry {
 export async function createQwenStream(
   prompt: string,
   reasoningEffort: QwenReasoningEffort,
+  webSearch: boolean,
   modelId: string,
   forcedParentId?: string | null,
   accountId?: string,
   files?: QwenFileEntry[],
   pendingMultimodal?: Array<Array<{ type: string; text?: string; image_url?: { url: string }; video_url?: { url: string }; audio_url?: { url: string }; file_url?: { url: string } }>>
 ): Promise<{ stream: ReadableStream, headers: Record<string, string>, uiSessionId: string, controller: AbortController, accountId: string }> {
+  if (webSearch) {
+    await configureNativeTools(accountId);
+  }
+
   let chatEntry: WarmPoolEntry;
   try {
     chatEntry = await getWarmedChat(accountId);
@@ -449,7 +467,7 @@ export async function createQwenStream(
           auto_thinking: autoThinking,
           thinking_mode: thinkingMode,
           ...(thinkingEnabled ? { thinking_format: 'summary' } : {}),
-          auto_search: true
+          auto_search: webSearch
         },
         extra: {
           meta: {

@@ -19,6 +19,15 @@ export type ToolChoice = 'auto' | 'none' | 'required' | {
 
 export type QwenReasoningEffort = 'auto' | 'thinking' | 'fast';
 
+export interface WebSearchSource {
+  citation_index: number;
+  url: string;
+  title: string;
+  snippet?: string;
+  hostname?: string | null;
+  date?: string;
+}
+
 // --- Message Types ---
 
 export interface ToolCallFunction {
@@ -52,6 +61,7 @@ export interface OpenAIRequest {
   messages: Message[];
   stream?: boolean;
   reasoning_effort?: QwenReasoningEffort;
+  web_search?: boolean;
   tools?: FunctionToolDefinition[];
   tool_choice?: ToolChoice;
   stream_options?: {
@@ -76,6 +86,7 @@ export interface ChoiceDelta {
   content?: string | null;
   reasoning_content?: string | null;
   tool_calls?: ToolCall[];
+  web_search_sources?: WebSearchSource[];
 }
 
 export interface Choice {

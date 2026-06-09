@@ -12,12 +12,23 @@ import { Context } from 'hono';
 import { stream as honoStream } from 'hono/streaming';
 import crypto from 'crypto';
 import { createQwenStream, updateSessionParent, RetryableQwenStreamError } from '../services/qwen.js';
-import { OpenAIRequest, ChoiceDelta, Message, QwenReasoningEffort } from '../utils/types.js';
+import {
+  OpenAIRequest,
+  ChoiceDelta,
+  Message,
+  QwenReasoningEffort,
+  WebSearchSource,
+} from '../utils/types.js';
 import { registry } from '../tools/registry.js';
 import type { FunctionToolDefinition } from '../tools/types.js';
 import { robustParseJSON } from '../utils/json.js';
 import { StreamingToolParser } from '../tools/parser.js';
-import { QwenStreamParser, ParsedChunkResult } from '../utils/qwen-stream-parser.js';
+import {
+  QwenStreamParser,
+  extractWebSearchSources,
+  formatWebSearchSourcesAppendix,
+  getCitedWebSearchSources,
+} from '../utils/qwen-stream-parser.js';
 import { getModelContextWindow } from '../core/model-registry.js'
 import { truncateMessages, estimateTokenCount } from '../utils/context-truncation.js';
 import { getNextAccount, getNextAvailableAccount, markAccountRateLimited, getAccountCooldownInfo } from '../core/account-manager.js';
@@ -165,6 +176,16 @@ export async function chatCompletions(c: Context) {
         },
       }, 400);
     }
+    if (body.web_search !== undefined && typeof body.web_search !== 'boolean') {
+      return c.json({
+        error: {
+          message: 'web_search must be a boolean',
+          type: 'invalid_request_error',
+          param: 'web_search',
+        },
+      }, 400);
+    }
+    const webSearchRequested = body.web_search ?? false;
     
     // Extract the prompt
     let prompt = '';
@@ -334,6 +355,7 @@ export async function chatCompletions(c: Context) {
           const result = await createQwenStream(
             finalPrompt,
             reasoningEffort,
+            webSearchRequested,
             body.model,
             isNewSession ? null : undefined,
             accountId === 'global' ? undefined : accountId,
@@ -465,6 +487,11 @@ export async function chatCompletions(c: Context) {
         });
       }
 
+      const citedWebSearchSources = webSearchRequested
+        ? getCitedWebSearchSources(finalContent, parserState.webSearchSources)
+        : [];
+      finalContent += formatWebSearchSourcesAppendix(citedWebSearchSources);
+
       const effectivePromptTokens = parserState.promptTokens || estimateTokenCount(finalPrompt);
       const usage = {
         prompt_tokens: effectivePromptTokens,
@@ -474,6 +501,9 @@ export async function chatCompletions(c: Context) {
       };
       const message: any = { role: 'assistant', content: toolCallsOut.length ? null : finalContent };
       if (parserState.reasoningBuffer) message.reasoning_content = parserState.reasoningBuffer;
+      if (citedWebSearchSources.length > 0) {
+        message.web_search_sources = citedWebSearchSources;
+      }
       if (toolCallsOut.length) toolCallsOut.forEach((tc, idx) => tc.index = idx);
       if (toolCallsOut.length) message.tool_calls = toolCallsOut;
 
@@ -562,6 +592,7 @@ export async function chatCompletions(c: Context) {
         let targetResponseId: string | null = null;
         let targetResponseIdSet = false;
         let currentThoughtIndex = 0;
+        let webSearchSources: WebSearchSource[] = [];
         const toolParser = hasTools ? new StreamingToolParser(bodyAny.tools) : null;
 
         let buffer = '';
@@ -586,10 +617,9 @@ export async function chatCompletions(c: Context) {
             if (!trimmed || !trimmed.startsWith('data: ')) continue;
 
             const dataStr = trimmed.slice(6);
-             if (dataStr === '[DONE]') {
-               streamWriter.write('data: [DONE]\n\n');
-               continue;
-             }
+            if (dataStr === '[DONE]') {
+              continue;
+            }
 
             try {
               const chunk = JSON.parse(dataStr);
@@ -629,6 +659,11 @@ export async function chatCompletions(c: Context) {
                       currentThoughtIndex = thoughts.length;
                       foundStr = true;
                     }
+                  }
+                } else if (delta.phase === 'web_search') {
+                  const sources = extractWebSearchSources(delta);
+                  if (sources.length > 0) {
+                    webSearchSources = sources;
                   }
                 } else if (delta.phase === 'answer') {
                   isThinkingChunk = false;
@@ -750,6 +785,14 @@ export async function chatCompletions(c: Context) {
           }
         }
 
+        const citedWebSearchSources = webSearchRequested
+          ? getCitedWebSearchSources(lastFullContent, webSearchSources)
+          : [];
+        const sourcesAppendix = formatWebSearchSourcesAppendix(citedWebSearchSources);
+        if (sourcesAppendix) {
+          fastWriteContent(sourcesAppendix);
+        }
+
         const effectivePromptTokens = promptTokens || estimateTokenCount(finalPrompt);
         const usage = {
           prompt_tokens: effectivePromptTokens,
@@ -765,7 +808,12 @@ export async function chatCompletions(c: Context) {
           object: 'chat.completion.chunk',
           created: createdTimestamp,
           model: body.model,
-          choices: [makeChoice({}, finalFinishReason)],
+          choices: [makeChoice(
+            citedWebSearchSources.length > 0
+              ? { web_search_sources: citedWebSearchSources }
+              : {},
+            finalFinishReason,
+          )],
           ...(body.stream_options?.include_usage ? {} : { usage })
         });
 

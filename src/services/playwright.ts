@@ -429,8 +429,6 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
       cache.lastHeadersTime = Date.now();
       cache.refreshInProgress = false;
 
-      import('./qwen.js').then(m => m.disableNativeTools(accountId).catch(() => {}));
-
       await route.abort('aborted');
 
       await page.unroute('**/api/v2/chat/completions*', routeHandler);

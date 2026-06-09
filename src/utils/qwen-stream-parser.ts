@@ -12,6 +12,15 @@ import { updateSessionParent } from '../services/qwen.js';
 import { getIncrementalDelta } from '../routes/chat.js';
 import { StreamingToolParser } from '../tools/parser.js';
 import type { FunctionToolDefinition } from '../tools/types.js';
+import type { WebSearchSource } from './types.js';
+
+interface QwenWebSearchDocument {
+  url?: string;
+  title?: string;
+  snippet?: string;
+  hostname?: string | null;
+  date?: string;
+}
 
 export interface QwenStreamDelta {
   phase: string;
@@ -19,6 +28,10 @@ export interface QwenStreamDelta {
   extra?: {
     summary_thought?: {
       content: string[];
+    };
+    web_search_info?: QwenWebSearchDocument[];
+    tool_result?: {
+      docs?: QwenWebSearchDocument[];
     };
   };
 }
@@ -49,6 +62,7 @@ export interface StreamParserState {
   currentThoughtIndex: number;
   lastFullContent: string;
   reasoningBuffer: string;
+  webSearchSources: WebSearchSource[];
   promptTokens: number;
   completionTokens: number;
 }
@@ -68,6 +82,54 @@ export interface QwenStreamParseOptions {
     name: string;
     arguments: Record<string, unknown>;
   }) => void;
+  /** Callback invoked when Qwen publishes a cumulative web search source list. */
+  onWebSearchSources?: (sources: WebSearchSource[]) => void;
+}
+
+export function extractWebSearchSources(delta: QwenStreamDelta): WebSearchSource[] {
+  const documents = delta.extra?.web_search_info ?? delta.extra?.tool_result?.docs;
+  if (!Array.isArray(documents)) return [];
+
+  return documents.flatMap((document, index) => {
+    if (!document?.url) return [];
+    let url: URL;
+    try {
+      url = new URL(document.url);
+    } catch {
+      return [];
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return [];
+
+    return [{
+      citation_index: index + 1,
+      url: url.href,
+      title: document.title?.replace(/\s+/g, ' ').trim() || url.href,
+      ...(document.snippet ? { snippet: document.snippet } : {}),
+      ...(document.hostname !== undefined ? { hostname: document.hostname } : {}),
+      ...(document.date ? { date: document.date.trim() } : {}),
+    }];
+  });
+}
+
+export function getCitedWebSearchSources(
+  content: string,
+  sources: WebSearchSource[],
+): WebSearchSource[] {
+  const citedIndexes = new Set<number>();
+  for (const match of content.matchAll(/\[\[(\d+)\]\]/g)) {
+    citedIndexes.add(Number(match[1]));
+  }
+  return sources.filter(source => citedIndexes.has(source.citation_index));
+}
+
+export function formatWebSearchSourcesAppendix(sources: WebSearchSource[]): string {
+  if (sources.length === 0) return '';
+
+  const lines = sources.map(source => {
+    const title = source.title.replace(/([\[\]])/g, '\\$1');
+    return `[${source.citation_index}] [${title}](<${source.url}>)`;
+  });
+  return `\n\nSources:\n${lines.join('\n')}`;
 }
 
 /**
@@ -97,6 +159,7 @@ export class QwenStreamParser {
       onThinking: options.onThinking,
       onAnswer: options.onAnswer,
       onToolCall: options.onToolCall,
+      onWebSearchSources: options.onWebSearchSources,
     };
 
     this._state = {
@@ -104,6 +167,7 @@ export class QwenStreamParser {
       currentThoughtIndex: 0,
       lastFullContent: '',
       reasoningBuffer: '',
+      webSearchSources: [],
       promptTokens: 0,
       completionTokens: 0,
     };
@@ -126,6 +190,11 @@ export class QwenStreamParser {
   /** Get accumulated answer content. */
   get answerContent(): string {
     return this._state.lastFullContent;
+  }
+
+  /** Get the latest cumulative source list returned by Qwen web search. */
+  get webSearchSources(): readonly WebSearchSource[] {
+    return this._state.webSearchSources;
   }
 
   /** Get token usage statistics. */
@@ -155,6 +224,8 @@ export class QwenStreamParser {
 
     // Track token usage
     this.updateUsage(chunk);
+
+    this.updateWebSearchSources(chunk);
 
     // Extract content delta
     const delta = this.extractDelta(chunk);
@@ -217,6 +288,7 @@ export class QwenStreamParser {
       currentThoughtIndex: 0,
       lastFullContent: '',
       reasoningBuffer: '',
+      webSearchSources: [],
       promptTokens: this._state.promptTokens,
       completionTokens: this._state.completionTokens,
     };
@@ -250,6 +322,24 @@ export class QwenStreamParser {
         this._state.promptTokens = chunk.usage.input_tokens;
       }
     }
+  }
+
+  private updateWebSearchSources(chunk: QwenStreamChunk): void {
+    if (
+      this._state.targetResponseId !== null
+      && chunk.response_id !== this._state.targetResponseId
+    ) {
+      return;
+    }
+
+    const delta = chunk.choices?.[0]?.delta;
+    if (!delta || delta.phase !== 'web_search') return;
+
+    const sources = extractWebSearchSources(delta);
+    if (sources.length === 0) return;
+
+    this._state.webSearchSources = sources;
+    this.options.onWebSearchSources?.(sources);
   }
 
   private extractDelta(chunk: QwenStreamChunk): ParsedChunkResult | null {
